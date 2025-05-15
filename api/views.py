@@ -1,0 +1,854 @@
+from rest_framework import viewsets, permissions, status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.authtoken.models import Token
+from rest_framework.permissions import IsAuthenticated
+from django.contrib.auth import authenticate
+from django.db.models import Sum
+from django.db.models.functions import TruncMonth
+from datetime import datetime, timedelta
+from django.utils import timezone
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from dateutil.relativedelta import relativedelta
+from django.db.models import Count
+from rest_framework.decorators import action
+from django.http import HttpResponse
+from .models import Expense, Category, Budget, FinancialGoal
+from .serializers import (
+    ExpenseSerializer,
+    CategorySerializer,
+    UserSerializer,
+    RegisterSerializer,
+    BudgetSerializer,
+    FinancialGoalSerializer,
+)
+import re
+import csv
+from io import StringIO, BytesIO
+import json
+from django.template.loader import get_template
+from django.template import Context
+
+# Authentication views
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def register_user(request):
+    serializer = RegisterSerializer(data=request.data)
+    if serializer.is_valid():
+        user = serializer.save()
+        token, created = Token.objects.get_or_create(user=user)
+        return Response(
+            {"token": token.key, "user": UserSerializer(user).data},
+            status=status.HTTP_201_CREATED,
+        )
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def login_user(request):
+    username = request.data.get("username")
+    password = request.data.get("password")
+
+    user = authenticate(username=username, password=password)
+    if user:
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
+        token, created = Token.objects.get_or_create(user=user)
+        return Response({"token": token.key, "user": UserSerializer(user).data})
+    return Response(
+        {"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED
+    )
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def update_email(request):
+    user = request.user
+    new_email = request.data.get("new_email")
+
+    if not new_email:
+        return Response(
+            {"error": "New email is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Validate the new email
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
+        return Response(
+            {"error": "Invalid email format"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Check if the new email is the same as the current one
+    if new_email == user.email:
+        return Response(
+            {"error": "New email is the same as the current email"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Update the user's email
+    user.email = new_email
+    user.save()
+
+    # Optionally, you can also generate a new token if needed
+    Token.objects.filter(user=user).delete()
+    token = Token.objects.create(user=user)
+
+    return Response(
+        {"message": "Email updated successfully", "token": token.key}
+    )
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def get_user_profile(request):
+    user = request.user
+    return Response(
+        {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "date_joined": user.date_joined,
+            "last_login": user.last_login,
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def change_password(request):
+    user = request.user
+    current_password = request.data.get("current_password")
+    new_password = request.data.get("new_password")
+
+    if not current_password or not new_password:
+        return Response(
+            {"error": "Both current and new password are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Verify current password
+    if not user.check_password(current_password):
+        return Response(
+            {"error": "Current password is incorrect"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Set new password
+    user.set_password(new_password)
+    user.save()
+
+    # Generate new token
+    Token.objects.filter(user=user).delete()
+    token = Token.objects.create(user=user)
+
+    return Response({"message": "Password changed successfully", "token": token.key})
+
+
+# Expense viewset
+class ExpenseViewSet(viewsets.ModelViewSet):
+    serializer_class = ExpenseSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Expense.objects.filter(user=self.request.user)
+
+
+# Category viewset
+class CategoryViewSet(viewsets.ModelViewSet):
+    serializer_class = CategorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Category.objects.filter(user=self.request.user)
+    
+class BudgetViewSet(viewsets.ModelViewSet):
+    serializer_class = BudgetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Budget.objects.filter(user=self.request.user)
+    
+    def list(self, request, *args, **kwargs):
+        """Override list method to include spending data"""
+        queryset = self.get_queryset()
+        
+        # Get current month for expense calculations
+        today = timezone.now().date()
+        start_of_month = today.replace(day=1)
+        
+        # Prepare enhanced budget data
+        budget_data = []
+        
+        for budget in queryset:
+            # Calculate current month's spending for this category
+            current_month_spending = Expense.objects.filter(
+                user=request.user,
+                category=budget.category.name,
+                date__gte=start_of_month
+            ).aggregate(total=Sum('amount'))['total'] or 0
+            
+            # Calculate total spending for this category (all time)
+            total_category_spending = Expense.objects.filter(
+                user=request.user,
+                category=budget.category.name
+            ).aggregate(total=Sum('amount'))['total'] or 0
+            
+            # Calculate percentage and remaining amount
+            percentage = (current_month_spending / budget.limit) * 100 if budget.limit > 0 else 0
+            remaining = budget.limit - current_month_spending
+            
+            # Create the enhanced budget object
+            budget_data.append({
+                'id': budget.id,
+                'category': budget.category.id,
+                'category_name': budget.category.name,
+                'limit': budget.limit,
+                'spent': current_month_spending,
+                'total_spent': total_category_spending,
+                'percentage': round(percentage, 1),
+                'remaining': remaining
+            })
+        
+        return Response(budget_data)
+    
+    def create(self, request, *args, **kwargs):
+        """Create a new budget, handling the category relationship"""
+        category_id = request.data.get('category')
+        limit = request.data.get('limit')
+        
+        if not category_id or limit is None:
+            return Response(
+                {'error': 'Category and limit are required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Convert limit to float and validate
+            limit = float(limit)
+            if limit < 0:
+                return Response(
+                    {'error': 'Limit must be a positive number'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+            # Get the category
+            category = Category.objects.get(id=category_id, user=request.user)
+            
+            # Check if budget already exists for this category
+            existing_budget = Budget.objects.filter(
+                user=request.user,
+                category=category
+            ).first()
+            
+            if existing_budget:
+                # Update existing budget
+                existing_budget.limit = limit
+                existing_budget.save()
+                serializer = self.get_serializer(existing_budget)
+                return Response(serializer.data)
+            
+            # Create new budget
+            budget = Budget.objects.create(
+                user=request.user,
+                category=category,
+                limit=limit
+            )
+            
+            serializer = self.get_serializer(budget)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        except Category.DoesNotExist:
+            return Response(
+                {'error': 'Category not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError:
+            return Response(
+                {'error': 'Limit must be a valid number'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+class FinancialGoalViewSet(viewsets.ModelViewSet):
+    serializer_class = FinancialGoalSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return FinancialGoal.objects.filter(user=self.request.user)
+    
+    @action(detail=True, methods=['post'])
+    def update_contribution(self, request, pk=None):
+        """Add contribution to a financial goal"""
+        try:
+            goal = self.get_object()
+            amount = request.data.get('amount', 0)
+            
+            try:
+                amount = float(amount)
+                if amount <= 0:
+                    return Response(
+                        {"error": "Amount must be a positive number"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "Amount must be a valid number"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            goal.currentAmount += amount
+            goal.save()
+            
+            return Response(self.get_serializer(goal).data)
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+# AI Prediction view
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def get_predictions(request):
+    # Get all expenses for the user
+    expenses = Expense.objects.filter(user=request.user)
+
+    if not expenses.exists():
+        return Response([])
+
+    # Get unique categories
+    categories = set(expenses.values_list("category", flat=True))
+
+    # Prepare response data
+    predictions = []
+
+    for category in categories:
+        category_expenses = expenses.filter(category=category)
+
+        # Skip if not enough data
+        if category_expenses.count() < 3:
+            continue
+
+        # Convert to DataFrame for easier manipulation
+        df = pd.DataFrame(list(category_expenses.values("date", "amount")))
+        df["date"] = pd.to_datetime(df["date"])
+        df["month"] = df["date"].dt.to_period("M")
+
+        # Group by month and sum amounts
+        monthly_data = df.groupby("month")["amount"].sum().reset_index()
+        monthly_data["month_num"] = range(1, len(monthly_data) + 1)
+
+        # Need at least 3 months of data for meaningful prediction
+        if len(monthly_data) < 3:
+            continue
+
+        # Prepare data for regression
+        X = monthly_data[["month_num"]].values
+        y = monthly_data["amount"].values
+
+        # Train linear regression model
+        model = LinearRegression()
+        model.fit(X, y)
+
+        # Predict next 3 months
+        next_months = []
+        last_month = monthly_data["month"].iloc[-1]
+
+        for i in range(1, 4):
+            next_month_num = len(monthly_data) + i
+            predicted_amount = model.predict([[next_month_num]])[0]
+
+            # Ensure prediction is not negative
+            predicted_amount = max(0, predicted_amount)
+
+            # Format month for display
+            next_month_date = last_month.to_timestamp() + relativedelta(months=i)
+            month_str = next_month_date.strftime("%b %Y")
+
+            next_months.append(
+                {
+                    "month": month_str,
+                    "predicted_amount": round(float(predicted_amount), 2),
+                }
+            )
+        existing_entry = next(
+            (item for item in predictions if item["category"] == category), None
+        )
+        if not existing_entry:
+            predictions.append({"category": category, "predictions": next_months})
+
+    return Response(predictions)
+
+
+# Automated categorization
+def suggest_category(description, user):
+    """Suggest a category based on expense description"""
+    # Get all expenses with categories
+    expenses = Expense.objects.filter(user=user)
+
+    if not expenses.exists():
+        return None
+
+    # Simple keyword matching for now
+    description = description.lower()
+
+    # Check for exact matches first
+    exact_matches = expenses.filter(description__iexact=description)
+    if exact_matches.exists():
+        # Return the most common category for this exact description
+        return (
+            exact_matches.values("category")
+            .annotate(count=Count("category"))
+            .order_by("-count")
+            .first()["category"]
+        )
+
+    # Check for partial matches
+    for word in description.split():
+        if len(word) > 3:  # Only consider words with more than 3 characters
+            partial_matches = expenses.filter(description__icontains=word)
+            if partial_matches.exists():
+                # Return the most common category for this partial match
+                return (
+                    partial_matches.values("category")
+                    .annotate(count=Count("category"))
+                    .order_by("-count")
+                    .first()["category"]
+                )
+
+    # If no matches, return the most common category overall
+    return (
+        expenses.values("category")
+        .annotate(count=Count("category"))
+        .order_by("-count")
+        .first()["category"]
+    )
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def suggest_category_api(request):
+    description = request.data.get("description", "")
+    if not description:
+        return Response(
+            {"error": "Description is required"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    category = suggest_category(description, request.user)
+    return Response({"suggested_category": category})
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_csv(request):
+    """Export user expenses as CSV"""
+    user = request.user
+    expenses = Expense.objects.filter(user=user).order_by('-date')
+    
+    # Create a file-like buffer to receive CSV data
+    csv_buffer = StringIO()
+    writer = csv.writer(csv_buffer)
+    
+    # Add CSV header
+    writer.writerow(['Date', 'Description', 'Category', 'Amount'])
+    
+    # Add expense data
+    for expense in expenses:
+        writer.writerow([
+            expense.date.strftime('%Y-%m-%d'),
+            expense.description,
+            expense.category,
+            expense.amount
+        ])
+    
+    # Create response with CSV content
+    response = HttpResponse(csv_buffer.getvalue(), content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="expenses.csv"'
+    
+    return response
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_data(request, format_type):
+    """Unified export endpoint supporting multiple formats"""
+    if format_type.lower() == 'csv':
+        return export_csv(request)
+    else:
+        return HttpResponse(
+            json.dumps({"error": f"Unsupported format: {format_type}"}),
+            content_type='application/json',
+            status=400
+        )
+
+# Chatbot API
+# @api_view(["POST"])
+# @permission_classes([permissions.IsAuthenticated])
+# def chatbot_query(request):
+#     """Process natural language queries about expenses"""
+#     query = request.data.get("query", "").lower()
+#     user = request.user
+    
+#     # Greetings and general questions with regex
+#     greetings = r"hi|hello|hey|what's up|how are you"
+#     general_questions = r"who are you|what can you do|help"
+    
+#     # Regex for query types
+#     total_spending = r"(total|spent)"
+#     highest_expense = r"(highest|most|top)"
+#     average_expense = r"(average|avg)"
+#     category_expense = r"(category)"
+#     recent_expenses = r"(recent|latest|last)"
+#     predict_expenses = r"(predict|forecast|future)"
+    
+#     # Greetings
+#     if re.search(greetings, query):
+#         return Response({"response": "Hello! How can I assist you with your expenses today?"})
+    
+#     # General questions
+#     elif re.search(general_questions, query):
+#         response = (
+#             "I can help you with queries like:\n\n"
+#             "• How much have I spent this month?\n"
+#             "• What's my total spending on food?\n"
+#             "• What are my top spending categories?\n"
+#             "• What's my highest expense?\n"
+#             "• Show me my recent expenses.\n"
+#             "• Predict my future expenses."
+#         )
+#         return Response({"response": response})
+    
+#     # Get all user expenses
+#     expenses = Expense.objects.filter(user=user)
+    
+#     if not expenses.exists():
+#         return Response({"response": "You don't have any expenses recorded yet."})
+    
+#     # Handle total/spent queries
+#     if re.search(total_spending, query):
+#         # Handle queries about total spending
+#         categories = list(set(expenses.values_list("category", flat=True)))
+#         mentioned_category = next((cat for cat in categories if re.search(r"\b" + re.escape(cat.lower()) + r"\b", query)), None)
+        
+#         # Handle time period
+#         time_periods = {
+#             "this month": r"this month|current month",
+#             "last month": r"last month|previous month",
+#         }
+        
+#         for period, pattern in time_periods.items():
+#             if re.search(pattern, query):
+#                 is_this_month = period == "this month"
+#                 today = timezone.now().date()
+#                 start_of_month = today.replace(day=1)
+#                 if is_this_month:
+#                     result = expenses.filter(date__gte=start_of_month).aggregate(total=Sum("amount"))
+#                     return Response({
+#                         "response": f"This month, you've spent ₹{result['total'] or 0:.2f}."
+#                     })
+#                 else:
+#                     last_month = start_of_month - timedelta(days=1)
+#                     start_of_last_month = last_month.replace(day=1)
+#                     result = expenses.filter(
+#                         date__gte=start_of_last_month, 
+#                         date__lt=start_of_month
+#                     ).aggregate(total=Sum("amount"))
+#                     return Response({
+#                         "response": f"Last month, you spent ₹{result['total'] or 0:.2f}."
+#                     })
+        
+#         # Handle all-time total
+#         if not mentioned_category:
+#             result = expenses.aggregate(total=Sum("amount"))
+#             return Response({
+#                 "response": f"In total, you've spent ₹{result['total'] or 0:.2f} across all categories."
+#             })
+        
+#     # Handle highest/most/top queries
+#     elif re.search(highest_expense, query):
+#         if re.search(category_expense, query):
+#             # Highest spending category
+#             category_totals = expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
+#             if category_totals:
+#                 top_category = category_totals[0]
+#                 return Response({
+#                     "response": f"Your highest spending category is {top_category['category']} with a total of ₹{top_category['total']:.2f}."
+#                 })
+#         else:
+#             # Highest individual expense
+#             highest_expense = expenses.order_by("-amount").first()
+#             return Response({
+#                 "response": f"Your highest expense is ₹{highest_expense.amount} for {highest_expense.description} on {highest_expense.date} in the {highest_expense.category} category."
+#             })
+    
+#     # Handle average/avg queries
+#     elif re.search(average_expense, query):
+#         categories = list(set(expenses.values_list("category", flat=True)))
+#         mentioned_category = next((cat for cat in categories if re.search(r"\b" + re.escape(cat.lower()) + r"\b", query)), None)
+        
+#         if mentioned_category:
+#             # Average for specific category
+#             category_expenses = expenses.filter(category=mentioned_category)
+#             result = category_expenses.aggregate(avg=Sum("amount") / Count("id"))
+#             return Response({
+#                 "response": f"Your average expense in the {mentioned_category} category is ₹{result['avg'] or 0:.2f}."
+#             })
+#         else:
+#             # Overall average
+#             result = expenses.aggregate(avg=Sum("amount") / Count("id"))
+#             return Response({
+#                 "response": f"Your average expense amount is ₹{result['avg'] or 0:.2f}."
+#             })
+    
+#     # Handle category listing queries
+#     elif re.search(category_expense, query):
+#         category_totals = expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
+        
+#         if not category_totals:
+#             return Response({"response": "You don't have any categorized expenses yet."})
+        
+#         response = "Here are your expense categories:\n\n"
+#         for idx, cat in enumerate(category_totals, 1):
+#             response += f"{idx}. {cat['category']}: ₹{cat['total']:.2f}\n"
+        
+#         return Response({"response": response})
+    
+#     # Handle recent/last queries
+#     elif re.search(recent_expenses, query):
+#         limit = 5  # Default number to show
+#         num_match = re.search(r'\b(\d+)\b', query)
+#         if num_match:
+#             limit = int(num_match.group(1))
+        
+#         recent = expenses.order_by("-date")[:limit]
+        
+#         if not recent:
+#             return Response({"response": "You don't have any recent expenses."})
+        
+#         response = f"Here are your {limit} most recent expenses:\n\n"
+#         for idx, exp in enumerate(recent, 1):
+#             response += f"{idx}. {exp.description}: ₹{exp.amount} ({exp.date}) - {exp.category}\n"
+        
+#         return Response({"response": response})
+    
+#     # Handle future predictions queries
+#     elif re.search(predict_expenses, query):
+#         categories = list(set(expenses.values_list("category", flat=True)))
+#         mentioned_category = next((cat for cat in categories if re.search(r"\b" + re.escape(cat.lower()) + r"\b", query)), None)
+        
+#         if mentioned_category:
+#             response = f"Based on your spending patterns, here's a prediction for {mentioned_category}. You can view detailed predictions in the Predictions section of the dashboard."
+#         else:
+#             response = "You can view detailed spending predictions for all categories in the Predictions section of the dashboard."
+        
+#         return Response({"response": response})
+
+#     else:
+#         # Handle unknown queries
+#         response = (
+#             "I'm not sure how to answer that question about your expenses. "
+#             "Try asking about your total spending, spending by category, or highest expenses. "
+#             "Type 'help' to see what I can do."
+#         )
+#         return Response({"response": response})
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def chatbot_query(request):
+    """Process natural language queries about expenses"""
+    query = request.data.get("query", "").lower()
+    user = request.user
+    
+    # Greetings and general questions
+    greetings = ["hi", "hello", "hey", "what's up", "how are you"]
+    general_questions = ["who are you","who are you?", "what can you do", "help"]
+
+    if query in greetings:
+        return Response({"response": "Hello! How can I assist you with your expenses today?"})
+    elif query in general_questions or "help" in query:
+        response = (
+            "I'm a chatbot that can help you with queries about your expenses.\n\n"
+            "I can help you with queries like:\n\n"
+            "• How much have I spent this month?\n"
+            "• What's my total spending on food?\n"
+            "• What are my top spending categories?\n"
+            "• What's my highest expense?\n"
+            "• Show me my recent expenses.\n"
+            "• Predict my future expenses."
+        )
+        return Response({"response": response})
+    
+    # Get all user expenses
+    expenses = Expense.objects.filter(user=user)
+    
+    if not expenses.exists():
+        return Response({"response": "You don't have any expenses recorded yet."})
+    
+    # Process different types of queries
+    if "total" in query or "spent" in query:
+        # Handle queries about total spending
+        
+        # Check if query is about a specific category
+        categories = list(set(expenses.values_list("category", flat=True)))
+        mentioned_category = next((cat for cat in categories if cat.lower() in query), None)
+        
+        # Check if query is about a specific time period
+        is_this_month = "this month" in query or "current month" in query
+        is_last_month = "last month" in query or "previous month" in query
+        
+        if mentioned_category:
+            category_expenses = expenses.filter(category=mentioned_category)
+            
+            if is_this_month:
+                today = timezone.now().date()
+                start_of_month = today.replace(day=1)
+                result = category_expenses.filter(date__gte=start_of_month).aggregate(total=Sum("amount"))
+                return Response({
+                    "response": f"This month, you've spent ₹{result['total'] or 0:.2f} on {mentioned_category}."
+                })
+            elif is_last_month:
+                today = timezone.now().date()
+                start_of_this_month = today.replace(day=1)
+                last_month = start_of_this_month - timedelta(days=1)
+                start_of_last_month = last_month.replace(day=1)
+                result = category_expenses.filter(
+                    date__gte=start_of_last_month, 
+                    date__lt=start_of_this_month
+                ).aggregate(total=Sum("amount"))
+                return Response({
+                    "response": f"Last month, you spent ₹{result['total'] or 0:.2f} on {mentioned_category}."
+                })
+            else:
+                # All time for this category
+                result = category_expenses.aggregate(total=Sum("amount"))
+                return Response({
+                    "response": f"In total, you've spent ₹{result['total'] or 0:.2f} on {mentioned_category}."
+                })
+        else:
+            # Total spending without category filter
+            if is_this_month:
+                today = timezone.now().date()
+                start_of_month = today.replace(day=1)
+                result = expenses.filter(date__gte=start_of_month).aggregate(total=Sum("amount"))
+                return Response({
+                    "response": f"This month, you've spent a total of ₹{result['total'] or 0:.2f}."
+                })
+            elif is_last_month:
+                today = timezone.now().date()
+                start_of_this_month = today.replace(day=1)
+                last_month = start_of_this_month - timedelta(days=1)
+                start_of_last_month = last_month.replace(day=1)
+                result = expenses.filter(
+                    date__gte=start_of_last_month, 
+                    date__lt=start_of_this_month
+                ).aggregate(total=Sum("amount"))
+                return Response({
+                    "response": f"Last month, you spent a total of ₹{result['total'] or 0:.2f}."
+                })
+            else:
+                # All time total
+                result = expenses.aggregate(total=Sum("amount"))
+                return Response({
+                    "response": f"In total, you've spent ₹{result['total'] or 0:.2f} across all categories."
+                })
+    
+    elif "highest" in query or "most" in query or "top" in query:
+        # Handle queries about highest expenses
+        
+        # Check if it's about categories or individual expenses
+        if "category" in query:
+            # Get the category with highest total
+            category_totals = expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
+            if category_totals:
+                top_category = category_totals[0]
+                return Response({
+                    "response": f"Your highest spending category is {top_category['category']} with a total of ₹{top_category['total']:.2f}."
+                })
+        else:
+            # Get the highest individual expense
+            highest_expense = expenses.order_by("-amount").first()
+            return Response({
+                "response": f"Your highest expense is ₹{highest_expense.amount} for {highest_expense.description} on {highest_expense.date} in the {highest_expense.category} category."
+            })
+    
+    elif "average" in query or "avg" in query:
+        # Handle queries about average spending
+        
+        # Check if query is about a specific category
+        categories = list(set(expenses.values_list("category", flat=True)))
+        mentioned_category = next((cat for cat in categories if cat.lower() in query), None)
+        
+        if mentioned_category:
+            # Average for specific category
+            category_expenses = expenses.filter(category=mentioned_category)
+            result = category_expenses.aggregate(avg=Sum("amount") / Count("id"))
+            return Response({
+                "response": f"Your average expense in the {mentioned_category} category is ₹{result['avg'] or 0:.2f}."
+            })
+        else:
+            # Overall average
+            result = expenses.aggregate(avg=Sum("amount") / Count("id"))
+            return Response({
+                "response": f"Your average expense amount is ₹{result['avg'] or 0:.2f}."
+            })
+    
+    elif "categories" in query or "category" in query:
+        # List all categories with their totals
+        category_totals = expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
+        
+        if not category_totals:
+            return Response({"response": "You don't have any categorized expenses yet."})
+        
+        response = "Here are your expense categories:\n\n"
+        for idx, cat in enumerate(category_totals, 1):
+            response += f"{idx}. {cat['category']}: ₹{cat['total']:.2f}\n"
+        
+        return Response({"response": response})
+    
+    elif "recent" in query or "latest" in query or "last" in query:
+        # Get recent expenses
+        limit = 5  # Default number to show
+        
+        # Check if a specific number is mentioned
+        import re
+        num_match = re.search(r'\b(\d+)\b', query)
+        if num_match:
+            limit = int(num_match.group(1))
+        
+        recent = expenses.order_by("-date")[:limit]
+        
+        if not recent:
+            return Response({"response": "You don't have any recent expenses."})
+        
+        response = f"Here are your {limit} most recent expenses:\n\n"
+        for idx, exp in enumerate(recent, 1):
+            response += f"{idx}. {exp.description}: ₹{exp.amount} ({exp.date}) - {exp.category}\n"
+        
+        return Response({"response": response})
+    
+    elif "predict" in query or "forecast" in query or "future" in query:
+        # Redirect to predictions
+        categories = list(set(expenses.values_list("category", flat=True)))
+        mentioned_category = next((cat for cat in categories if cat.lower() in query), None)
+        
+        if mentioned_category:
+            response = f"Based on your spending patterns, here's a prediction for {mentioned_category}. You can view detailed predictions in the Predictions section of the dashboard."
+        else:
+            response = "You can view detailed spending predictions for all categories in the Predictions section of the dashboard."
+        
+        return Response({"response": response})
+
+    else:
+        # Handle unknown queries
+        response = (
+            "I'm not sure how to answer that question about your expenses. "
+            "Try asking about your total spending, spending by category, or highest expenses. "
+            "Type 'help' to see what I can do."
+        )
+        return Response({"response": response}) 
