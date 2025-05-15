@@ -3,7 +3,7 @@ from django.utils import timezone
 from datetime import timedelta
 import re
 from rest_framework.response import Response
-from api.models import Expense
+from api.models import Expense, Budget,FinancialGoal
 
 def handle_total_query(query, expenses):
     """Handle queries about total spending"""
@@ -104,3 +104,74 @@ def get_predictions(request):
     return Response({
         "response": "This functionality is not yet implemented. Please check back later."
     })
+
+def handle_total_spending(user):
+    total = Expense.objects.filter(user=user).aggregate(total=Sum("amount"))["total"] or 0
+    return Response({"response": f"You've spent a total of ₹{total:.2f}."})
+
+def handle_category_spending(user):
+    category_totals = Expense.objects.filter(user=user).values("category").annotate(total=Sum("amount")).order_by("-total")
+    if not category_totals:
+        return Response({"response": "You haven't recorded any category-wise expenses yet."})
+    
+    response = "Here's your spending by category:\n\n"
+    for cat in category_totals:
+        response += f"- {cat['category']}: ₹{cat['total']:.2f}\n"
+    return Response({"response": response.strip()})
+
+def handle_recent_expenses(user, limit=5):
+    recent = Expense.objects.filter(user=user).order_by("-date")[:limit]
+    if not recent:
+        return Response({"response": "No recent expenses found."})
+    
+    response = "Here are your most recent expenses:\n\n"
+    for exp in recent:
+        response += f"- {exp.description}: ₹{exp.amount} on {exp.date} ({exp.category})\n"
+    return Response({"response": response.strip()})
+
+def handle_highest_expense(user):
+    highest = Expense.objects.filter(user=user).order_by("-amount").first()
+    if not highest:
+        return Response({"response": "You don't have any recorded expenses yet."})
+    
+    return Response({
+        "response": f"Your highest expense is ₹{highest.amount} for '{highest.description}' on {highest.date} in category {highest.category}."
+    })
+
+def handle_budget_progress(user):
+    budgets = Budget.objects.filter(user=user)
+    if not budgets.exists():
+        return Response({"response": "You haven't set up any budgets yet."})
+    
+    response = "Here's your budget progress:\n\n"
+    for budget in budgets:
+        spent = Expense.objects.filter(user=user, category=budget.category.name).aggregate(total=Sum("amount"))["total"] or 0
+        response += (
+            f"- {budget.category.name}: ₹{spent:.2f} / ₹{budget.limit:.2f} "
+            f"({(spent / budget.limit * 100) if budget.limit > 0 else 0:.1f}%)\n"
+        )
+    return Response({"response": response.strip()})
+
+def handle_savings_progress(user):
+    goals = FinancialGoal.objects.filter(user=user)
+    if not goals.exists():
+        return Response({"response": "You don't have any financial goals set yet."})
+    
+    response = "Here's your savings goal progress:\n\n"
+    for goal in goals:
+        percent = (goal.currentAmount / goal.targetAmount * 100) if goal.targetAmount > 0 else 0
+        response += f"- {goal.name}: ₹{goal.currentAmount:.2f} / ₹{goal.targetAmount:.2f} ({percent:.1f}%)\n"
+    return Response({"response": response.strip()})
+
+def handle_expense_forecast(user):
+    # Simplified logic: monthly average multiplied by 12
+    from django.db.models.functions import TruncMonth
+    expenses = Expense.objects.filter(user=user)
+    
+    if not expenses.exists():
+        return Response({"response": "No expenses found to forecast from."})
+    
+    monthly = expenses.annotate(month=TruncMonth("date")).values("month").annotate(total=Sum("amount"))
+    avg_monthly = sum(month["total"] for month in monthly) / len(monthly)
+    
+    return Response({"response": f"Based on your average monthly spending, you may spend approximately ₹{avg_monthly * 12:.2f} this year."})

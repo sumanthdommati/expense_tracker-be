@@ -9,3 +9,7 @@ fpdf2==2.7.5
 xhtml2pdf==0.2.4
 psycopg2
 psycopg
+transformers>=4.33.0
+torch>=2.0.0
+huggingface_hub[hf_xet]==0.22.2
+scikit-learn==1.4.2
