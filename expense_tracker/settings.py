@@ -93,7 +93,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 USE_GPT = True
-COHERE_API_KEY = "taZbaLaCgjJAVENxWBSDMueevxdu459kdK6tJ06q"
+COHERE_API_KEY = ""
 
 # Internationalization
 LANGUAGE_CODE = "en-us"
