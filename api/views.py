@@ -464,15 +464,15 @@ class FinancialGoalViewSet(viewsets.ModelViewSet):
             amount = request.data.get('amount', 0)
             
             try:
-                amount = float(amount)
+                amount = Decimal(amount)
                 if amount <= 0:
                     return Response(
                         {"error": "Amount must be a positive number"},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-            except (ValueError, TypeError):
+            except (InvalidOperation, TypeError):
                 return Response(
-                    {"error": "Amount must be a valid number"},
+                    {"error": "Amount must be a valid decimal number"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
@@ -660,176 +660,9 @@ def export_data(request, format_type):
             status=400
         )
 
-# Chatbot API
-# @api_view(["POST"])
-# @permission_classes([permissions.IsAuthenticated])
-# def chatbot_query(request):
-#     """Process natural language queries about expenses"""
-#     query = request.data.get("query", "").lower()
-#     user = request.user
-    
-#     # Greetings and general questions with regex
-#     greetings = r"hi|hello|hey|what's up|how are you"
-#     general_questions = r"who are you|what can you do|help"
-    
-#     # Regex for query types
-#     total_spending = r"(total|spent)"
-#     highest_expense = r"(highest|most|top)"
-#     average_expense = r"(average|avg)"
-#     category_expense = r"(category)"
-#     recent_expenses = r"(recent|latest|last)"
-#     predict_expenses = r"(predict|forecast|future)"
-    
-#     # Greetings
-#     if re.search(greetings, query):
-#         return Response({"response": "Hello! How can I assist you with your expenses today?"})
-    
-#     # General questions
-#     elif re.search(general_questions, query):
-#         response = (
-#             "I can help you with queries like:\n\n"
-#             "• How much have I spent this month?\n"
-#             "• What's my total spending on food?\n"
-#             "• What are my top spending categories?\n"
-#             "• What's my highest expense?\n"
-#             "• Show me my recent expenses.\n"
-#             "• Predict my future expenses."
-#         )
-#         return Response({"response": response})
-    
-#     # Get all user expenses
-#     expenses = Expense.objects.filter(user=user)
-    
-#     if not expenses.exists():
-#         return Response({"response": "You don't have any expenses recorded yet."})
-    
-#     # Handle total/spent queries
-#     if re.search(total_spending, query):
-#         # Handle queries about total spending
-#         categories = list(set(expenses.values_list("category", flat=True)))
-#         mentioned_category = next((cat for cat in categories if re.search(r"\b" + re.escape(cat.lower()) + r"\b", query)), None)
-        
-#         # Handle time period
-#         time_periods = {
-#             "this month": r"this month|current month",
-#             "last month": r"last month|previous month",
-#         }
-        
-#         for period, pattern in time_periods.items():
-#             if re.search(pattern, query):
-#                 is_this_month = period == "this month"
-#                 today = timezone.now().date()
-#                 start_of_month = today.replace(day=1)
-#                 if is_this_month:
-#                     result = expenses.filter(date__gte=start_of_month).aggregate(total=Sum("amount"))
-#                     return Response({
-#                         "response": f"This month, you've spent ₹{result['total'] or 0:.2f}."
-#                     })
-#                 else:
-#                     last_month = start_of_month - timedelta(days=1)
-#                     start_of_last_month = last_month.replace(day=1)
-#                     result = expenses.filter(
-#                         date__gte=start_of_last_month, 
-#                         date__lt=start_of_month
-#                     ).aggregate(total=Sum("amount"))
-#                     return Response({
-#                         "response": f"Last month, you spent ₹{result['total'] or 0:.2f}."
-#                     })
-        
-#         # Handle all-time total
-#         if not mentioned_category:
-#             result = expenses.aggregate(total=Sum("amount"))
-#             return Response({
-#                 "response": f"In total, you've spent ₹{result['total'] or 0:.2f} across all categories."
-#             })
-        
-#     # Handle highest/most/top queries
-#     elif re.search(highest_expense, query):
-#         if re.search(category_expense, query):
-#             # Highest spending category
-#             category_totals = expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
-#             if category_totals:
-#                 top_category = category_totals[0]
-#                 return Response({
-#                     "response": f"Your highest spending category is {top_category['category']} with a total of ₹{top_category['total']:.2f}."
-#                 })
-#         else:
-#             # Highest individual expense
-#             highest_expense = expenses.order_by("-amount").first()
-#             return Response({
-#                 "response": f"Your highest expense is ₹{highest_expense.amount} for {highest_expense.description} on {highest_expense.date} in the {highest_expense.category} category."
-#             })
-    
-#     # Handle average/avg queries
-#     elif re.search(average_expense, query):
-#         categories = list(set(expenses.values_list("category", flat=True)))
-#         mentioned_category = next((cat for cat in categories if re.search(r"\b" + re.escape(cat.lower()) + r"\b", query)), None)
-        
-#         if mentioned_category:
-#             # Average for specific category
-#             category_expenses = expenses.filter(category=mentioned_category)
-#             result = category_expenses.aggregate(avg=Sum("amount") / Count("id"))
-#             return Response({
-#                 "response": f"Your average expense in the {mentioned_category} category is ₹{result['avg'] or 0:.2f}."
-#             })
-#         else:
-#             # Overall average
-#             result = expenses.aggregate(avg=Sum("amount") / Count("id"))
-#             return Response({
-#                 "response": f"Your average expense amount is ₹{result['avg'] or 0:.2f}."
-#             })
-    
-#     # Handle category listing queries
-#     elif re.search(category_expense, query):
-#         category_totals = expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
-        
-#         if not category_totals:
-#             return Response({"response": "You don't have any categorized expenses yet."})
-        
-#         response = "Here are your expense categories:\n\n"
-#         for idx, cat in enumerate(category_totals, 1):
-#             response += f"{idx}. {cat['category']}: ₹{cat['total']:.2f}\n"
-        
-#         return Response({"response": response})
-    
-#     # Handle recent/last queries
-#     elif re.search(recent_expenses, query):
-#         limit = 5  # Default number to show
-#         num_match = re.search(r'\b(\d+)\b', query)
-#         if num_match:
-#             limit = int(num_match.group(1))
-        
-#         recent = expenses.order_by("-date")[:limit]
-        
-#         if not recent:
-#             return Response({"response": "You don't have any recent expenses."})
-        
-#         response = f"Here are your {limit} most recent expenses:\n\n"
-#         for idx, exp in enumerate(recent, 1):
-#             response += f"{idx}. {exp.description}: ₹{exp.amount} ({exp.date}) - {exp.category}\n"
-        
-#         return Response({"response": response})
-    
-#     # Handle future predictions queries
-#     elif re.search(predict_expenses, query):
-#         categories = list(set(expenses.values_list("category", flat=True)))
-#         mentioned_category = next((cat for cat in categories if re.search(r"\b" + re.escape(cat.lower()) + r"\b", query)), None)
-        
-#         if mentioned_category:
-#             response = f"Based on your spending patterns, here's a prediction for {mentioned_category}. You can view detailed predictions in the Predictions section of the dashboard."
-#         else:
-#             response = "You can view detailed spending predictions for all categories in the Predictions section of the dashboard."
-        
-#         return Response({"response": response})
-
-#     else:
-#         # Handle unknown queries
-#         response = (
-#             "I'm not sure how to answer that question about your expenses. "
-#             "Try asking about your total spending, spending by category, or highest expenses. "
-#             "Type 'help' to see what I can do."
-#         )
-#         return Response({"response": response})
+def detect_intent(task_classifier,candidate_labels,query):
+    result = task_classifier(query, candidate_labels)
+    return result["labels"][0]
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
@@ -837,14 +670,50 @@ def chatbot_query(request):
     """Process natural language queries about expenses"""
     query = request.data.get("query", "").lower()
     user = request.user
-    
+    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+    labels = [
+    "total_spending",
+    "category_spending",
+    "recent_expenses",
+    "highest_expense",
+    "forecast_expenses",
+    "budgeting_goal",
+    "savings_progress",
+    "general_greeting",
+    "help",
+    "random"
+    ]
+    result = classifier(query, labels)
+    intent = result["labels"][0]
+    top_score = result["scores"][0]
+    THRESHOLD = 0.4
+    if top_score < THRESHOLD:
+        intent = "unknown"
     # Greetings and general questions
-    greetings = ["hi", "hello", "hey", "what's up", "how are you"]
-    general_questions = ["who are you","who are you?", "what can you do", "help"]
+    greetings = [
+    "hi", "hi?", "hello", "hello?", "hey", "hey?", "what's up", "what's up?", 
+    "how are you", "how are you?", "yo", "yo?", "good morning", "good morning?", 
+    "good afternoon", "good afternoon?", "good evening", "good evening?", 
+    "sup", "sup?", "hey there", "hey there?", "hiya", "hiya?", "howdy", "howdy?", 
+    "what's good", "what's good?", "what's happening", "what's happening?", 
+    "how's it going", "how's it going?", "what's new", "what's new?"
+    ]
+
+    general_questions = [
+    "who are you", "who are you?", "what can you do", "what can you do?", "help", "help?", 
+    "what do you do", "what do you do?", "tell me about yourself", "tell me about yourself?", 
+    "what are your skills", "what are your skills?", "how can you help me", "how can you help me?", 
+    "what services do you offer", "what services do you offer?", "what are you capable of", 
+    "what are you capable of?", "what's your purpose", "what's your purpose?", "what do you know", 
+    "what do you know?", "what can you tell me", "what can you tell me?", "how do you work", 
+    "how do you work?", "what's your function", "what's your function?", "what can you help me with", 
+    "what can you help me with?", "how can i use you", "how can i use you?", "what's your job", 
+    "what's your job?", "what are your features", "what are your features?"
+    ]
 
     if query in greetings:
         return Response({"response": "Hello! How can I assist you with your expenses today?"})
-    elif query in general_questions or "help" in query:
+    elif query.lower() in general_questions or "help" in query.lower():
         response = (
             "I'm a chatbot that can help you with queries about your expenses.\n\n"
             "I can help you with queries like:\n\n"
@@ -1016,7 +885,25 @@ def chatbot_query(request):
             response = "You can view detailed spending predictions for all categories in the Predictions section of the dashboard."
         
         return Response({"response": response})
-
+    
+    if intent == "total_spending":
+        return handle_total_spending(user)
+    elif intent == "category_spending":
+        return handle_category_spending(user)
+    elif intent == "recent_expenses":
+        return handle_recent_expenses(user)
+    elif intent == "highest_expense":
+        return handle_highest_expense(user)
+    elif intent == "budgeting_goal":
+        return handle_budget_progress(user)
+    elif intent == "savings_progress":
+        return handle_savings_progress(user)
+    elif intent == "forecast_expenses":
+        return handle_expense_forecast(user)
+    elif intent == "general_greeting":
+        return Response({"response": "Hello! How can I help with your expenses today?"})
+    elif intent == "help":
+        return Response({"response": "I can show spending summaries, recent transactions, budgeting goals, and predictions."})
     else:
         # Handle unknown queries
         response = (
