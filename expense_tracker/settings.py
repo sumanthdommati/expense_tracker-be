@@ -80,21 +80,22 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "expense_tracker.wsgi.application"
-
+DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': BASE_DIR / 'db.sqlite3',}}
 database_url = os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/bolt2')
-if database_url.startswith('django.db.backends'):
+if database_url:
     # Parse using your existing method if it's the old format
-    DB_CONN = urlparse(database_url)
-    DATABASES = {
-        "default": {
-            "NAME": DB_CONN.path[1:],
-            "ENGINE": DB_CONN.scheme,
-            "USER": DB_CONN.username,
-            "PASSWORD": DB_CONN.password,
-            "HOST": DB_CONN.hostname,
-            "PORT": DB_CONN.port,
-        }
-    }
+    # DB_CONN = urlparse(database_url)
+    # DATABASES = {
+    #     "default": {
+    #         "NAME": DB_CONN.path[1:],
+    #         "ENGINE": 'django.db.backends.postgresql',
+    #         "USER": DB_CONN.username,
+    #         "PASSWORD": DB_CONN.password,
+    #         "HOST": DB_CONN.hostname,
+    #         "PORT": DB_CONN.port,
+    #     }
+    # }
+    DATABASES['default'] = dj_database_url.parse(database_url)
 else:
     # Use dj_database_url for the standard format
     DATABASES = {
