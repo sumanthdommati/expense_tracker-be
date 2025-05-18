@@ -151,7 +151,8 @@ REST_FRAMEWORK = {
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
-    "http://localhost:3000" 
+    "http://localhost:3000",
+    "https://expense-tracker-fe-six.vercel.app" 
       # Vite default port
 ]
 
@@ -168,7 +169,8 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
       # Vite default port
-    "https://expensetracker-be-production.up.railway.app/"
+    "https://expensetracker-be-production.up.railway.app/",
+    "https://expense-tracker-fe-six.vercel.app/"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
