@@ -18,7 +18,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'your-dev-secret-key')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ["localhost",'127.0.0.1','expensetracker-be-production.up.railway.app']
 
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
 
@@ -162,6 +162,13 @@ CORS_ALLOW_METHODS = [
     "PATCH",
     "POST",
     "PUT",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+      # Vite default port
+    "https://expensetracker-be-production.up.railway.app/"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
