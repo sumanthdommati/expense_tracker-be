@@ -670,25 +670,63 @@ def chatbot_query(request):
     """Process natural language queries about expenses"""
     query = request.data.get("query", "").lower()
     user = request.user
-    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-    labels = [
-    "total_spending",
-    "category_spending",
-    "recent_expenses",
-    "highest_expense",
-    "forecast_expenses",
-    "budgeting_goal",
-    "savings_progress",
-    "general_greeting",
-    "help",
-    "random"
-    ]
-    result = classifier(query, labels)
-    intent = result["labels"][0]
-    top_score = result["scores"][0]
-    THRESHOLD = 0.4
-    if top_score < THRESHOLD:
-        intent = "unknown"
+    # classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+    # labels = [
+    # "total_spending",
+    # "category_spending",
+    # "recent_expenses",
+    # "highest_expense",
+    # "forecast_expenses",
+    # "budgeting_goal",
+    # "savings_progress",
+    # "general_greeting",
+    # "help",
+    # "random"
+    # ]
+    # result = classifier(query, labels)
+    # intent = result["labels"][0]
+    # top_score = result["scores"][0]
+    # THRESHOLD = 0.4
+    # if top_score < THRESHOLD:
+    #     intent = "unknown"
+    clean_query = ''.join(c for c in query if c.isalnum() or c.isspace())
+    
+    # Simple rule-based intent detection
+    def detect_intent(query):
+        # Add question marks to account for both forms in the original code
+        if any(greeting in query for greeting in greetings):
+            return "general_greeting"
+            
+        if any(question in query for question in general_questions) or "help" in query:
+            return "help"
+            
+        if ("total" in query or "spent" in query or "spending" in query or "how much" in query):
+            return "total_spending"
+            
+        if "category" in query or "categories" in query:
+            return "category_spending"
+            
+        if "recent" in query or "latest" in query or "last" in query:
+            return "recent_expenses"
+            
+        if "highest" in query or "most" in query or "top" in query or "biggest" in query:
+            return "highest_expense"
+            
+        if "budget" in query or "limit" in query:
+            return "budgeting_goal"
+            
+        if "save" in query or "saving" in query or "savings" in query or "goal" in query:
+            return "savings_progress"
+            
+        if "predict" in query or "forecast" in query or "future" in query or "next month" in query:
+            return "forecast_expenses"
+            
+        return "unknown"
+    
+    # Get user's intent
+    intent = detect_intent(clean_query)
+    if not expenses.exists() and intent not in ["general_greeting", "help"]:
+        return Response({"response": "You don't have any expenses recorded yet."})
     # Greetings and general questions
     greetings = [
     "hi", "hi?", "hello", "hello?", "hey", "hey?", "what's up", "what's up?", 
