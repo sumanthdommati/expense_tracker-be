@@ -31,7 +31,6 @@ import json
 from django.template.loader import get_template
 from django.template import Context
 from decimal import Decimal, InvalidOperation
-from transformers import pipeline
 from api.utils import (handle_expense_forecast, 
     handle_total_spending, 
     handle_highest_expense,
