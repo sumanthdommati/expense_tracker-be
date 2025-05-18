@@ -40,6 +40,169 @@ from api.utils import (handle_expense_forecast,
     handle_categories_query,
     handle_savings_progress, 
     handle_budget_progress)
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.core.mail import send_mail
+from django.conf import settings
+from django.contrib.auth.models import User
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def request_password_reset(request):
+    """Request a password reset link"""
+    email = request.data.get("email")
+    
+    if not email:
+        return Response(
+            {"error": "Email is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    
+    try:
+        user = User.objects.get(email=email)
+        
+        # Generate token and uid
+        token = default_token_generator.make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        
+        # Create reset link
+        # In a real app, this should point to your frontend URL
+        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+        
+        # Send email
+        subject = "Password Reset for Your Expense Tracker"
+        message = f"""
+        Hello {user.username},
+        
+        You requested a password reset for your Expense Tracker account.
+        
+        Please click the link below to reset your password:
+        {reset_link}
+        
+        If you didn't request this, please ignore this email.
+        
+        Thanks,
+        The Expense Tracker Team
+        """
+        
+        from_email = settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else 'noreply@expensetracker.com'
+        
+        send_mail(
+            subject,
+            message,
+            from_email,
+            [user.email],
+            fail_silently=False,
+        )
+        
+        return Response(
+            {"message": "Password reset email has been sent."},
+            status=status.HTTP_200_OK,
+        )
+    except User.DoesNotExist:
+        # Don't reveal whether a user exists to prevent user enumeration
+        return Response(
+            {"message": "Password reset email has been sent if the email is valid."},
+            status=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        return Response(
+            {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def validate_password_reset_token(request):
+    """Validate password reset token"""
+    uid = request.data.get("uid")
+    token = request.data.get("token")
+    
+    if not uid or not token:
+        return Response(
+            {"error": "Both UID and token are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    
+    try:
+        # Decode the UID to get the User
+        uid = force_str(urlsafe_base64_decode(uid))
+        user = User.objects.get(pk=uid)
+        
+        # Check if the token is valid
+        if default_token_generator.check_token(user, token):
+            return Response(
+                {"valid": True, "uid": uid, "token": token},
+                status=status.HTTP_200_OK,
+            )
+        else:
+            return Response(
+                {"valid": False, "error": "Invalid or expired token"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        return Response(
+            {"valid": False, "error": "Invalid user ID"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def reset_password(request):
+    """Reset password with valid token"""
+    uid = request.data.get("uid")
+    token = request.data.get("token")
+    new_password = request.data.get("new_password")
+    
+    if not uid or not token or not new_password:
+        return Response(
+            {"error": "UID, token, and new password are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    
+    # Password validation
+    if len(new_password) < 8:
+        return Response(
+            {"error": "Password must be at least 8 characters long"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    
+    try:
+        # Decode the UID to get the User
+        uid = force_str(urlsafe_base64_decode(uid))
+        user = User.objects.get(pk=uid)
+        
+        # Check if the token is valid
+        if default_token_generator.check_token(user, token):
+            # Set the new password
+            user.set_password(new_password)
+            user.save()
+            
+            # Invalidate all existing tokens for the user
+            Token.objects.filter(user=user).delete()
+            new_token = Token.objects.create(user=user)
+            
+            return Response(
+                {
+                    "message": "Password has been reset successfully",
+                    "token": new_token.key,
+                    "user": UserSerializer(user).data,
+                },
+                status=status.HTTP_200_OK,
+            )
+        else:
+            return Response(
+                {"error": "Invalid or expired token"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        return Response(
+            {"error": "Invalid user ID"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 # Authentication views
 @api_view(["POST"])
