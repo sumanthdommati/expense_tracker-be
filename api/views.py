@@ -688,45 +688,6 @@ def chatbot_query(request):
     # THRESHOLD = 0.4
     # if top_score < THRESHOLD:
     #     intent = "unknown"
-    clean_query = ''.join(c for c in query if c.isalnum() or c.isspace())
-    
-    # Simple rule-based intent detection
-    def detect_intent(query):
-        # Add question marks to account for both forms in the original code
-        if any(greeting in query for greeting in greetings):
-            return "general_greeting"
-            
-        if any(question in query for question in general_questions) or "help" in query:
-            return "help"
-            
-        if ("total" in query or "spent" in query or "spending" in query or "how much" in query):
-            return "total_spending"
-            
-        if "category" in query or "categories" in query:
-            return "category_spending"
-            
-        if "recent" in query or "latest" in query or "last" in query:
-            return "recent_expenses"
-            
-        if "highest" in query or "most" in query or "top" in query or "biggest" in query:
-            return "highest_expense"
-            
-        if "budget" in query or "limit" in query:
-            return "budgeting_goal"
-            
-        if "save" in query or "saving" in query or "savings" in query or "goal" in query:
-            return "savings_progress"
-            
-        if "predict" in query or "forecast" in query or "future" in query or "next month" in query:
-            return "forecast_expenses"
-            
-        return "unknown"
-    
-    # Get user's intent
-    intent = detect_intent(clean_query)
-    if not expenses.exists() and intent not in ["general_greeting", "help"]:
-        return Response({"response": "You don't have any expenses recorded yet."})
-    # Greetings and general questions
     greetings = [
     "hi", "hi?", "hello", "hello?", "hey", "hey?", "what's up", "what's up?", 
     "how are you", "how are you?", "yo", "yo?", "good morning", "good morning?", 
@@ -748,6 +709,25 @@ def chatbot_query(request):
     "what's your job?", "what are your features", "what are your features?"
     ]
 
+    farewells = [
+    "bye", "bye?", "goodbye", "goodbye?", "see ya", "see ya?", 
+    "see you", "see you?", "take care", "take care?", "later", "later?", 
+    "peace", "peace?", "catch you later", "catch you later?", "farewell", "farewell?", 
+    "adios", "adios?", "ciao", "ciao?", "so long", "so long?", 
+    "i'm out", "i'm out?", "i gotta go", "i gotta go?", "talk to you later", "talk to you later?", 
+    "see you around", "see you around?", "have a good one", "have a good one?", 
+    "until next time", "until next time?", "take it easy", "take it easy?", 
+    "gotta run", "gotta run?", "i'm off", "i'm off?", "later gator", "later gator?", 
+    "smell ya later", "smell ya later?"
+    ]
+
+
+    expenses = Expense.objects.filter(user=user)
+    
+    if not expenses.exists():
+        return Response({"response": "You don't have any expenses recorded yet."})
+    # Greetings and general questions
+
     if query in greetings:
         return Response({"response": "Hello! How can I assist you with your expenses today?"})
     elif query.lower() in general_questions or "help" in query.lower():
@@ -762,15 +742,14 @@ def chatbot_query(request):
             "• Predict my future expenses."
         )
         return Response({"response": response})
-    
-    # Get all user expenses
-    expenses = Expense.objects.filter(user=user)
+    if query in farewells:
+        return Response({"response": "Goodbye! Have a nice day!"})
     
     if not expenses.exists():
         return Response({"response": "You don't have any expenses recorded yet."})
     
     # Process different types of queries
-    if "total" in query or "spent" in query:
+    if "total" in query or "spent" in query or "spend" in query :
         # Handle queries about total spending
         
         # Check if query is about a specific category
@@ -923,6 +902,41 @@ def chatbot_query(request):
         
         return Response({"response": response})
     
+    clean_query = ''.join(c for c in query if c.isalnum() or c.isspace())
+    
+    def detect_intent(query):
+        # Add question marks to account for both forms in the original code
+        if any(greeting in query for greeting in greetings):
+            return "general_greeting"
+            
+        if any(question in query for question in general_questions) or "help" in query:
+            return "help"
+            
+        if ("total" in query or "spent" in query or "spending" in query or "how much" in query):
+            return "total_spending"
+            
+        if "category" in query or "categories" in query:
+            return "category_spending"
+            
+        if "recent" in query or "latest" in query or "last" in query:
+            return "recent_expenses"
+            
+        if "highest" in query or "most" in query or "top" in query or "biggest" in query:
+            return "highest_expense"
+            
+        if "budget" in query or "limit" in query:
+            return "budgeting_goal"
+            
+        if "save" in query or "saving" in query or "savings" in query or "goal" in query:
+            return "savings_progress"
+            
+        if "predict" in query or "forecast" in query or "future" in query or "next month" in query:
+            return "forecast_expenses"
+            
+        return "unknown"
+    
+    intent = detect_intent(clean_query)
+
     if intent == "total_spending":
         return handle_total_spending(user)
     elif intent == "category_spending":
