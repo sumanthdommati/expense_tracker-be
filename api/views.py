@@ -829,8 +829,6 @@ def chatbot_query(request):
 
     expenses = Expense.objects.filter(user=user)
 
-    if not expenses.exists():
-        return Response({"response": "You don't have any expenses recorded yet."})
     # Greetings and general questions
 
     if query.lower() in greetings:
