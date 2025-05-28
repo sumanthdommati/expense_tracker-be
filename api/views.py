@@ -245,6 +245,52 @@ def login_user(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+def update_username(request):
+    user = request.user
+    new_username = request.data.get("new_username")
+
+    if not new_username:
+        return Response(
+            {"error": "New username is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Check if the new username is the same as the current one
+    if new_username == user.username:
+        return Response(
+            {"error": "New username is the same as the current username"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Optional: validate username format (alphanumeric, 3-30 chars)
+    if not re.match(r"^[a-zA-Z0-9_]{3,30}$", new_username):
+        return Response(
+            {
+                "error": "Username must be 3–30 characters long and contain only letters, numbers, or underscores."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Check for uniqueness
+    if User.objects.filter(username=new_username).exists():
+        return Response(
+            {"error": "Username is already taken"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Update username
+    user.username = new_username
+    user.save()
+
+    # Optionally regenerate token
+    Token.objects.filter(user=user).delete()
+    token = Token.objects.create(user=user)
+
+    return Response({"message": "Username updated successfully", "token": token.key})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
 def update_email(request):
     user = request.user
     new_email = request.data.get("new_email")

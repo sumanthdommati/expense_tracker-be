@@ -19,8 +19,17 @@ urlpatterns = [
     path("chatbot/", views.chatbot_query, name="chatbot"),
     path("export/csv/", views.export_csv, name="export-csv"),
     path("export/<str:format_type>/", views.export_data, name="export-data"),
-    path('auth/update-email/', views.update_email, name='update-email'),
-    path('password-reset/request/', views.request_password_reset, name='password-reset-request'),
-    path('password-reset/validate-token/', views.validate_password_reset_token, name='validate-reset-token'),
-    path('password-reset/reset/', views.reset_password, name='password-reset'),
+    path("auth/update-email/", views.update_email, name="update-email"),
+    path(
+        "password-reset/request/",
+        views.request_password_reset,
+        name="password-reset-request",
+    ),
+    path(
+        "password-reset/validate-token/",
+        views.validate_password_reset_token,
+        name="validate-reset-token",
+    ),
+    path("password-reset/reset/", views.reset_password, name="password-reset"),
+    path("auth/update-username/", views.update_username, name="update-username"),
 ]
